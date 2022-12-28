@@ -235,12 +235,11 @@ int MatrixMultiply(int argc, char **argv,
   double flopsPerMatrixMul = 2.0 * static_cast<double>(dimsA.x) *
                              static_cast<double>(dimsA.y) *
                              static_cast<double>(dimsB.x);
-  double gigaFlops =
-      (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
+  double gigaFlops = (flopsPerMatrixMul * 1.0e-9f) / (msecPerMatrixMul / 1000.0f);
   printf(
-      "Performance= %.2f GFlop/s, Time= %.3f msec, Size= %.0f Ops,\n"
-      "TransferSize= %d kB, WorkgroupSize= %u threads/block\n\n",
-      gigaFlops, msecPerMatrixMul, flopsPerMatrixMul,
+      "Performance = %.2f GFlop/s, Time = %.3f msec, Size = %.0f Ops,\n"
+      "TransferSize = %d kB, WorkgroupSize = %u threads/block\n\n",
+      gigaFlops, msecTotal, flopsPerMatrixMul,
 	  ( mem_size_A + mem_size_B ) / 1024, threads.x * threads.y);
 	  
   // Copy result from device to host
@@ -314,8 +313,8 @@ int main(int argc, char **argv) {
 
   int block_size = 32;
 
-  dim3 dimsA(8 * 8 * block_size, 8 * 8 * block_size, 1);
-  dim3 dimsB(8 * 8 * block_size, 8 * 8 * block_size, 1);
+  dim3 dimsA(10 * block_size, 10 * block_size, 1);
+  dim3 dimsB(10 * block_size, 10 * block_size, 1);
 
   // width of Matrix A
   if (checkCmdLineFlag(argc, (const char **)argv, "wA")) {
