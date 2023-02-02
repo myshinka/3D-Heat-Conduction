@@ -1,3 +1,3 @@
-# 3D-Heat-Conduction
-3D Heat Conduction project for Mulitcore programming
+# 3D-Matrix-Multiplication
+3D Matrix Multiplication project for Mulitcore programming
 
