@@ -51,81 +51,6 @@
 #include <helper_functions.h>
 #include <helper_cuda.h>
 
-template <int BLOCK_SIZE> __global__ void MatrixMulCUDA(float *C, float *A,
-    float *B, int wA,
-    int wB) {
-  // Block index
-  int bx = blockIdx.x;
-  int by = blockIdx.y;
-  //int bz = blockIdx.z;
-
-  // Thread index
-  int tx = threadIdx.x;
-  int ty = threadIdx.y;
-  //int tz = threadIdx.z;
-
-  // Index of the first sub-matrix of A processed by the block
-  int aBegin = wA * BLOCK_SIZE * by;
-
-  // Index of the last sub-matrix of A processed by the block
-  int aEnd   = aBegin + wA - 1;
-
-  // Step size used to iterate through the sub-matrices of A
-  int aStep  = BLOCK_SIZE;
-
-  // Index of the first sub-matrix of B processed by the block
-  int bBegin = BLOCK_SIZE * bx;
-
-  // Step size used to iterate through the sub-matrices of B
-  int bStep  = BLOCK_SIZE * wB;
-
-  // Csub is used to store the element of the block sub-matrix
-  // that is computed by the thread
-  float Csub = 0;
-
-  // Loop over all the sub-matrices of A and B
-  // required to compute the block sub-matrix
-  for (int a = aBegin, b = bBegin;
-       a <= aEnd;
-       a += aStep, b += bStep) {
-    // Declaration of the shared memory array As used to
-    // store the sub-matrix of A
-    __shared__ float As[BLOCK_SIZE][BLOCK_SIZE];
-
-    // Declaration of the shared memory array Bs used to
-    // store the sub-matrix of B
-    __shared__ float Bs[BLOCK_SIZE][BLOCK_SIZE];
-
-    // Load the matrices from device memory
-    // to shared memory; each thread loads
-    // one element of each matrix
-    As[ty][tx] = A[a + wA * ty + tx];
-    Bs[ty][tx] = B[b + wB * ty + tx];
-
-    // Synchronize to make sure the matrices are loaded
-    __syncthreads();
-
-    // Multiply the two matrices together;
-    // each thread computes one element
-    // of the block sub-matrix
-#pragma unroll
-
-    for (int k = 0; k < BLOCK_SIZE; ++k) {
-      Csub += As[ty][k] * Bs[k][tx];
-    }
-
-    // Synchronize to make sure that the preceding
-    // computation is done before loading two new
-    // sub-matrices of A and B in the next iteration
-    __syncthreads();
-  }
-
-  // Write the block sub-matrix to device memory;
-  // each thread writes one element
-  int c = wB * BLOCK_SIZE * by + BLOCK_SIZE * bx;
-  C[c + wB * ty + tx] = Csub;
-}
-
 __global__ void matrixMulSeqGPU( float * c, float * a, float * b, int N )
 {
   int val;
@@ -209,22 +134,19 @@ int MatrixMultiply(int argc, char **argv,
   cudaStream_t stream;
 
   // Initialize host memory
-  const float valB = 0.01f;
   ConstantInit(h_A, size, 1.0f);
-  ConstantInit(h_B, size, valB);
+  ConstantInit(h_B, size, 0.01f);
 
   // Allocate device memory
   //*******************************************************************
   
-  float *d_A, *d_B, *d_C, *gpu_A, *gpu_B, *gpu_C;
+  float *d_A, *d_B, *d_C;
 
-  // Allocate host matrix C - cpu_C is for CPU, cpu_h_C for sequential GPU.
+  // Allocate host matrix C - cpu_C is for CPU, h_C for sequential GPU.
   float *h_C;
   float *cpu_C;
-  float *cpu_h_C;
   checkCudaErrors(cudaMallocHost(&h_C, mem_size));
   checkCudaErrors(cudaMallocHost(&cpu_C, mem_size));
-  checkCudaErrors(cudaMallocHost(&cpu_h_C, mem_size));
 
   if (h_C == NULL) {
     fprintf(stderr, "Failed to allocate host matrix C!\n");
@@ -234,9 +156,6 @@ int MatrixMultiply(int argc, char **argv,
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_A), mem_size));
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_B), mem_size));
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&d_C), mem_size));
-  checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&gpu_A), mem_size));
-  checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&gpu_B), mem_size));
-  checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&gpu_C), mem_size));
   
   // Allocate CUDA events that we'll use for timing
   cudaEvent_t start, stop;
@@ -252,10 +171,6 @@ int MatrixMultiply(int argc, char **argv,
       cudaMemcpyAsync(d_A, h_A, mem_size, cudaMemcpyHostToDevice, stream));
   checkCudaErrors(
       cudaMemcpyAsync(d_B, h_B, mem_size, cudaMemcpyHostToDevice, stream));
-  checkCudaErrors(
-      cudaMemcpyAsync(gpu_A, h_A, mem_size, cudaMemcpyHostToDevice, stream));
-  checkCudaErrors(
-      cudaMemcpyAsync(gpu_B, h_B, mem_size, cudaMemcpyHostToDevice, stream));
 
   // Setup execution parameters
   //*******************************************************************
@@ -302,7 +217,7 @@ int MatrixMultiply(int argc, char **argv,
   printf("Computing result using sequential kernel...\n");
 
   // Warmup operation
-  matrixMulSeqGPU <<<grid, threads, 0, stream>>> (gpu_C, gpu_A, gpu_B, dims.x);
+  matrixMulSeqGPU <<<grid, threads, 0, stream>>> (d_C, d_A, d_B, dims.x);
 
   checkCudaErrors(cudaStreamSynchronize(stream));
 
@@ -311,7 +226,7 @@ int MatrixMultiply(int argc, char **argv,
 
   // Execute the kernel
   for (int j = 0; j < nIter; j++) {
-	matrixMulSeqGPU <<<grid, threads, 0, stream>>> (gpu_C, gpu_A, gpu_B, dims.x);
+	matrixMulSeqGPU <<<grid, threads, 0, stream>>> (d_C, d_A, d_B, dims.x);
   }
 
   // Record the stop event
@@ -326,58 +241,10 @@ int MatrixMultiply(int argc, char **argv,
   checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
   
   MatMulPerformance(msecTotal, nIter, threads, dims, mem_size);
-  
-  /* Waiting to be rebuild for 3D - TODO
-  //*******************************************************************
-  
-  // Create and start timer
-  printf("Computing result using tiled kernel...\n");
-
-  // Performs warmup operation using matrixMul CUDA kernel
-  if (block_size == 16) {
-    MatrixMulCUDA<16>
-        <<<grid, threads, 0, stream>>>(d_C, d_A, d_B, dims.x, dims.x);
-  } else {
-    MatrixMulCUDA<32>
-        <<<grid, threads, 0, stream>>>(d_C, d_A, d_B, dims.x, dims.x);
-  }
-
-  printf("done\n");
-  checkCudaErrors(cudaStreamSynchronize(stream));
-
-  // Record the start event
-  checkCudaErrors(cudaEventRecord(start, stream));
-
-  // Execute the kernel
-  for (int j = 0; j < nIter; j++) {
-    if (block_size == 16) {
-      MatrixMulCUDA<16>
-          <<<grid, threads, 0, stream>>>(d_C, d_A, d_B, dims.x, dims.x);
-    } else {
-      MatrixMulCUDA<32>
-          <<<grid, threads, 0, stream>>>(d_C, d_A, d_B, dims.x, dims.x);
-    }
-  }
-
-  // Record the stop event
-  checkCudaErrors(cudaEventRecord(stop, stream));
-
-  // Wait for the stop event to complete
-  checkCudaErrors(cudaEventSynchronize(stop));
-
-  msecTotal = 0.0f;
-  checkCudaErrors(cudaEventElapsedTime(&msecTotal, start, stop));
-  
-  MatMulPerformance(msecTotal, nIter, threads, dims, mem_size);
-  */
   
   // Copy result from device to host
   //*******************************************************************
-  
-  checkCudaErrors(
-      cudaMemcpyAsync(cpu_h_C, gpu_C, mem_size, cudaMemcpyDeviceToHost, stream));
-  checkCudaErrors(cudaStreamSynchronize(stream));
-  
+
   checkCudaErrors(
       cudaMemcpyAsync(h_C, d_C, mem_size, cudaMemcpyDeviceToHost, stream));
   checkCudaErrors(cudaStreamSynchronize(stream));
@@ -390,21 +257,14 @@ int MatrixMultiply(int argc, char **argv,
   
   double eps = 1.e-6;  // machine zero
   double seq_err = 0;
-  double tile_err = 0;
 
   for (int i = 0; i < size; i++) {
-	if(seq_err > fabs(cpu_h_C[i] - cpu_C[i]))
-	  seq_err = fabs(cpu_h_C[i] - cpu_C[i]);
-	if(tile_err > fabs(h_C[i] - cpu_C[i]))
-      //tile_err = fabs(h_C[i] - cpu_C[i]);		// disabled until rebuild for 3D
+	if(seq_err > fabs(h_C[i] - cpu_C[i]))
+	  seq_err = fabs(h_C[i] - cpu_C[i]);
+
 
     if (seq_err > eps) {
       printf("Error! Sequential Matrix[%05d]=%.8f, error term is > %E\n",
-             i, h_C[i], eps);
-      correct = false;
-    }
-	if (tile_err > eps) {
-      printf("Error! Tiled Matrix[%05d]=%.8f, error term is > %E\n",
              i, h_C[i], eps);
       correct = false;
     }
@@ -420,14 +280,10 @@ int MatrixMultiply(int argc, char **argv,
   checkCudaErrors(cudaFreeHost(h_B));
   checkCudaErrors(cudaFreeHost(h_C));
   checkCudaErrors(cudaFreeHost(cpu_C));
-  checkCudaErrors(cudaFreeHost(cpu_h_C));
   
   checkCudaErrors(cudaFree(d_A));
   checkCudaErrors(cudaFree(d_B));
   checkCudaErrors(cudaFree(d_C));
-  checkCudaErrors(cudaFree(gpu_A));
-  checkCudaErrors(cudaFree(gpu_B));
-  checkCudaErrors(cudaFree(gpu_C));
   
   checkCudaErrors(cudaEventDestroy(start));
   checkCudaErrors(cudaEventDestroy(stop));
@@ -459,11 +315,11 @@ int main(int argc, char **argv) {
   // override the device ID based on input provided at the command line
   int dev = findCudaDevice(argc, (const char **)argv);
 
-  int block_size = 16;
+  int block_size = 32;
 
-  dim3 dims(block_size * 4, block_size * 4, block_size * 4);
+  dim3 dims(block_size, block_size, block_size);
 
-  // width of Matrix A
+  // Dimentions of matrices
   if (checkCmdLineFlag(argc, (const char **)argv, "N")) {
     dims.x = dims.y = dims.z = getCmdLineArgumentInt(argc, (const char **)argv, "N");
   }
